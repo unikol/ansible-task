@@ -1,1 +1,243 @@
 ---
+# ============================================================
+# PLAY 1: Configure MariaDB database server
+# ============================================================
+
+- name: Configure MariaDB database server
+  hosts: db
+  become: yes
+
+  tasks:
+    - name: Check required database variables
+      ansible.builtin.assert:
+        that:
+          - db_host is defined
+          - db_name is defined
+          - db_user is defined
+          - db_pass is defined
+        fail_msg: "Required variables: db_host, db_name, db_user, db_pass"
+
+    - name: Update apt cache and install MariaDB packages
+      ansible.builtin.apt:
+        name:
+          - mariadb-server
+          - python3-pymysql
+        state: present
+        update_cache: yes
+
+    - name: Start and enable MariaDB
+      ansible.builtin.service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Allow MariaDB to listen on all network interfaces
+      ansible.builtin.lineinfile:
+        path: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: '^\s*bind-address\s*=.*'
+        line: 'bind-address = 0.0.0.0'
+      notify: Restart MariaDB
+
+    - name: Create application database
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        encoding: utf8mb4
+        login_unix_socket: /run/mysqld/mysqld.sock
+
+    - name: Create application database user
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        host: "{{ item }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_unix_socket: /run/mysqld/mysqld.sock
+      loop:
+        - "%"
+        - "localhost"
+      no_log: true
+
+  handlers:
+    - name: Restart MariaDB
+      ansible.builtin.service:
+        name: mariadb
+        state: restarted
+
+
+# ============================================================
+# PLAY 2: Configure Apache and Laravel application server
+# ============================================================
+
+- name: Configure Apache Laravel application server
+  hosts: server
+  become: yes
+
+  vars:
+    app_repo: "https://github.com/Practical-DevOps/app-for-devops.git"
+    app_path: "/var/www/app"
+
+  tasks:
+    - name: Check required database variables
+      ansible.builtin.assert:
+        that:
+          - db_host is defined
+          - db_name is defined
+          - db_user is defined
+          - db_pass is defined
+        fail_msg: "Required variables: db_host, db_name, db_user, db_pass"
+
+    - name: Install Apache PHP Composer Node.js and required packages
+      ansible.builtin.apt:
+        name:
+          - apache2
+          - git
+          - composer
+          - nodejs
+          - npm
+          - unzip
+          - php
+          - php-cli
+          - libapache2-mod-php
+          - php-mysql
+          - php-mbstring
+          - php-xml
+          - php-curl
+          - php-zip
+          - php-bcmath
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Apache
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Clone Laravel application repository
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_path }}"
+        version: main
+        update: yes
+
+    - name: Install Composer dependencies
+      ansible.builtin.command:
+        cmd: composer install --no-interaction --prefer-dist
+        chdir: "{{ app_path }}"
+        creates: "{{ app_path }}/vendor/autoload.php"
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: "1"
+
+    - name: Install Node.js dependencies
+      ansible.builtin.command:
+        cmd: npm install
+        chdir: "{{ app_path }}"
+        creates: "{{ app_path }}/node_modules"
+
+    - name: Build frontend assets
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ app_path }}"
+        creates: "{{ app_path }}/public/build/manifest.json"
+
+    - name: Create Laravel environment file from example
+      ansible.builtin.copy:
+        src: "{{ app_path }}/.env.example"
+        dest: "{{ app_path }}/.env"
+        remote_src: yes
+        force: no
+
+    - name: Configure Laravel database connection
+      ansible.builtin.lineinfile:
+        path: "{{ app_path }}/.env"
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: "DB_CONNECTION", value: "mysql" }
+        - { key: "DB_HOST", value: "{{ db_host }}" }
+        - { key: "DB_PORT", value: "3306" }
+        - { key: "DB_DATABASE", value: "{{ db_name }}" }
+        - { key: "DB_USERNAME", value: "{{ db_user }}" }
+        - { key: "DB_PASSWORD", value: "{{ db_pass }}" }
+      no_log: true
+
+    - name: Set permissions for Laravel storage directory
+      ansible.builtin.file:
+        path: "{{ app_path }}/storage"
+        owner: www-data
+        group: www-data
+        mode: "0775"
+        recurse: yes
+
+    - name: Set permissions for Laravel cache directory
+      ansible.builtin.file:
+        path: "{{ app_path }}/bootstrap/cache"
+        owner: www-data
+        group: www-data
+        mode: "0775"
+        recurse: yes
+
+    - name: Read Laravel environment file
+      ansible.builtin.slurp:
+        src: "{{ app_path }}/.env"
+      register: laravel_env
+
+    - name: Generate Laravel application key
+      ansible.builtin.command:
+        cmd: php artisan key:generate --force
+        chdir: "{{ app_path }}"
+      when: "'APP_KEY=base64:' not in (laravel_env.content | b64decode)"
+
+    - name: Run Laravel database migrations
+      ansible.builtin.command:
+        cmd: php artisan migrate --force
+        chdir: "{{ app_path }}"
+
+    - name: Enable Apache rewrite module
+      ansible.builtin.command:
+        cmd: a2enmod rewrite
+      register: rewrite_module
+      changed_when: "'Enabling module rewrite' in rewrite_module.stdout"
+      notify: Restart Apache
+
+    - name: Create Apache virtual host
+      ansible.builtin.copy:
+        dest: /etc/apache2/sites-available/app.conf
+        content: |
+          <VirtualHost *:80>
+              ServerAdmin webmaster@localhost
+
+              DocumentRoot {{ app_path }}/public
+
+              <Directory {{ app_path }}/public>
+                  Options Indexes FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+
+              ErrorLog ${APACHE_LOG_DIR}/app_error.log
+              CustomLog ${APACHE_LOG_DIR}/app_access.log combined
+          </VirtualHost>
+        mode: "0644"
+      notify: Restart Apache
+
+    - name: Disable default Apache site
+      ansible.builtin.command:
+        cmd: a2dissite 000-default.conf
+      register: disable_default_site
+      changed_when: "'Site 000-default disabled' in disable_default_site.stdout"
+      notify: Restart Apache
+
+    - name: Enable Laravel Apache site
+      ansible.builtin.command:
+        cmd: a2ensite app.conf
+      register: enable_app_site
+      changed_when: "'Enabling site app' in enable_app_site.stdout"
+      notify: Restart Apache
+
+  handlers:
+    - name: Restart Apache
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
