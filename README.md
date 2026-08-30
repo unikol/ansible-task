@@ -1,3 +1,4 @@
+[![Tests](https://github.com/unikol/ansible-task/actions/workflows/main.yml/badge.svg)](https://github.com/unikol/ansible-task/actions/workflows/main.yml)
 # Ansible Task
 
 THere is the repository with some application developed on the [Laravel](https://laravel.com/) framework - https://github.com/Practical-DevOps/app-for-devops.
