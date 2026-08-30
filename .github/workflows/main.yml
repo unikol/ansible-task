@@ -28,12 +28,12 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - name: Generate a token
-        id: generate-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      # - name: Generate a token
+      #   id: generate-token
+      #   uses: actions/create-github-app-token@v2
+      #   with:
+      #     app-id: ${{ secrets.APP_ID }}
+      #     private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - uses: actions/checkout@v6
       - name: Update apt
         run: sudo apt update
@@ -64,9 +64,9 @@ jobs:
         run: |
           sudo apt-get install mariadb-client -y
           mysql -h $DB_HOST -u $DB_USER -D $DB_NAME -p$DB_PASS -e 'SHOW TABLES;' | grep users
-      - name: Final Step
-        env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
-        run: |
-          gh repo edit $GITHUB_REPOSITORY --visibility private --accept-visibility-change-consequences
+      # - name: Final Step
+      #   env:
+      #     GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+      #   run: |
+      #     gh repo edit $GITHUB_REPOSITORY --visibility private --accept-visibility-change-consequences
   
